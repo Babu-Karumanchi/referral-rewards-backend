@@ -1,0 +1,1 @@
+print("✅ Seed script ready! Run: python seed_data.py")
