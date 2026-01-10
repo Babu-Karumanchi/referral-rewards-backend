@@ -1,21 +1,18 @@
+# app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.database import engine
-from app.models.models import Base
-from app.api import referral, reward
-from app.core.config import settings
+from app.api import referral, reward, admin
+from app.core.database import engine, Base
+from app.models import models
 
-# Create tables
+# Create all tables
 Base.metadata.create_all(bind=engine)
-
-# Create FastAPI app
 app = FastAPI(
-    title=settings.APP_NAME,
-    description="Referral & Rewards Analytics System",
+    title="Referral & Rewards API",
+    description="Complete backend for referral and rewards system",
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,21 +24,16 @@ app.add_middleware(
 # Include routers
 app.include_router(referral.router)
 app.include_router(reward.router)
+app.include_router(admin.router)
 
-# Health check
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "message": "API is running"}
-
-# Root endpoint
 @app.get("/")
-def root():
+def read_root():
     return {
-        "app": settings.APP_NAME,
-        "version": "1.0.0",
-        "status": "running"
+        "status": "Backend is Running",
+        "docs": "/docs",
+        "redoc": "/redoc"
     }
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "timestamp": "2024-01-15T00:00:00Z"}

@@ -1,3 +1,3 @@
-from app.models.models import Base, User, Referral, RewardConfig, RewardLedger
+from app.models.models import Base, User, Referral,  RewardLedger
 
-__all__ = ["Base", "User", "Referral", "RewardConfig", "RewardLedger"]
+__all__ = ["Base", "User", "Referral", "RewardLedger"]

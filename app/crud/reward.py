@@ -1,153 +1,109 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
-from app.models.models import RewardLedger, RewardConfig, User, Referral
+from sqlalchemy import func, desc
 from datetime import datetime
-from typing import Dict, List, Any
+from app.models.models import RewardLedger, RewardConfig, User
 
-def get_reward_summary(db: Session, user_id: int) -> Dict[str, Any]:
-    """Get reward summary for user - FIXED"""
-    rewards = db.query(RewardLedger).filter(RewardLedger.user_id == user_id).all()
+def get_reward_summary(db: Session, user_id: str) -> dict:
+    """Get reward summary for a user"""
+    user = db.query(User).filter(User.username == user_id).first()
+    if not user:
+        return {"total_earned": 0, "pending": 0, "credited": 0, "unit": "points"}
     
-    if not rewards:
-        return {
-            "total_earned": 0,
-            "pending": 0,
-            "credited": 0,
-            "revoked": 0,  # ← ADDED
-            "unit": "POINTS"
-        }
+    result = db.query(
+        func.sum(RewardLedger.reward_value).filter(RewardLedger.status == "CREDITED").label("credited"),
+        func.sum(RewardLedger.reward_value).filter(RewardLedger.status == "PENDING").label("pending"),
+        func.max(RewardLedger.reward_unit).label("unit")
+    ).filter(
+        RewardLedger.user_id == user.id
+    ).first()
     
-    # FIXED: Handle empty rewards safely
-    unit = rewards[0].reward_unit if rewards else "POINTS"
-    total_earned = sum(r.reward_value for r in rewards)
-    pending = sum(r.reward_value for r in rewards if r.status == "PENDING")
-    credited = sum(r.reward_value for r in rewards if r.status == "CREDITED")
-    revoked = sum(r.reward_value for r in rewards if r.status == "REVOKED")
+    total_earned = (result.credited or 0) + (result.pending or 0)
     
     return {
         "total_earned": total_earned,
-        "pending": pending,
-        "credited": credited,
-        "revoked": revoked,  # ← ADDED
-        "unit": unit
+        "pending": result.pending or 0,
+        "credited": result.credited or 0,
+        "unit": result.unit or "points"
     }
 
-def get_reward_history(db: Session, user_id: int) -> List[Dict[str, Any]]:
-    """Get reward history for user - OPTIMIZED"""
+def get_reward_history(db: Session, user_id: str) -> list:
+    """Get reward history for a user"""
+    user = db.query(User).filter(User.username == user_id).first()
+    if not user:
+        return []
+    
     rewards = db.query(RewardLedger).filter(
-        RewardLedger.user_id == user_id
-    ).order_by(RewardLedger.created_at.desc()).all()
+        RewardLedger.user_id == user.id
+    ).order_by(
+        RewardLedger.created_at.desc()
+    ).all()
     
-    return [  # ← ONE LINER (more efficient)
-        {
-            "id": r.id,
-            "reward_type": r.reward_type,
-            "reward_value": r.reward_value,
-            "reward_unit": r.reward_unit,
-            "status": r.status,
-            "created_at": r.created_at.isoformat()  # ← JSON serializable
-        }
-        for r in rewards
-    ]
+    return rewards
 
-def credit_reward(db: Session, reward_id: int) -> Dict[str, str]:
-    """Credit a pending reward - PRODUCTION READY"""
-    reward = db.query(RewardLedger).filter(RewardLedger.id == reward_id).first()
+def get_pending_rewards(db: Session) -> list:
+    """Get all pending rewards for admin approval"""
+    rewards = db.query(RewardLedger).filter(
+        RewardLedger.status == "PENDING"
+    ).order_by(
+        RewardLedger.created_at.desc()
+    ).all()
     
+    result = []
+    for reward in rewards:
+        user = db.query(User).filter(User.id == reward.user_id).first()
+        result.append({
+            "id": reward.id,
+            "user_id": user.username if user else str(reward.user_id),
+            "reward_type": reward.reward_type,
+            "reward_value": reward.reward_value,
+            "reward_unit": reward.reward_unit,
+            "created_at": reward.created_at,
+            "referral_id": reward.referral_id
+        })
+    
+    return result
+
+def credit_reward(db: Session, reward_id: int) -> None:
+    """Credit a pending reward"""
+    reward = db.query(RewardLedger).filter(RewardLedger.id == reward_id).first()
     if not reward:
         raise ValueError("Reward not found")
     
     if reward.status != "PENDING":
-        raise ValueError(f"Only PENDING rewards can be credited. Current: {reward.status}")
+        raise ValueError(f"Reward is already {reward.status.lower()}")
     
     reward.status = "CREDITED"
-    reward.updated_at = datetime.utcnow()  # ← ADDED audit trail
+    reward.credited_at = datetime.now()
     db.commit()
-    
-    return {"status": "success", "message": f"Reward {reward_id} credited"}
 
-def revoke_reward(db: Session, reward_id: int) -> Dict[str, str]:
-    """Revoke a reward - PRODUCTION READY"""
+def revoke_reward(db: Session, reward_id: int) -> None:
+    """Revoke a reward"""
     reward = db.query(RewardLedger).filter(RewardLedger.id == reward_id).first()
-    
     if not reward:
         raise ValueError("Reward not found")
     
-    if reward.status == "REVOKED":
-        raise ValueError("Reward already revoked")
-    
     reward.status = "REVOKED"
-    reward.updated_at = datetime.utcnow()  # ← ADDED audit trail
     db.commit()
-    
-    return {"status": "success", "message": f"Reward {reward_id} revoked"}
 
-def create_reward_config(db: Session, reward_type: str, reward_value: int, reward_unit: str) -> Dict[str, Any]:
-    """Create reward configuration - FIXED"""
-    # Check duplicate
-    existing = db.query(RewardConfig).filter(
-        RewardConfig.reward_type == reward_type,
-        RewardConfig.reward_unit == reward_unit
-    ).first()
-    
+def create_reward_config(db: Session, reward_type: str, reward_value: int, reward_unit: str) -> dict:
+    """Create a new reward configuration"""
+    existing = db.query(RewardConfig).filter(RewardConfig.reward_type == reward_type).first()
     if existing:
-        raise ValueError(f"Config for {reward_type}/{reward_unit} exists")
+        existing.reward_value = reward_value
+        existing.reward_unit = reward_unit
+    else:
+        config = RewardConfig(
+            reward_type=reward_type,
+            reward_value=reward_value,
+            reward_unit=reward_unit
+        )
+        db.add(config)
     
-    config = RewardConfig(
-        reward_type=reward_type,
-        reward_value=reward_value,
-        reward_unit=reward_unit,
-        is_active=True
-    )
-    db.add(config)
     db.commit()
-    db.refresh(config)
+    db.refresh(existing if existing else config)
     
-    return {
-        "id": config.id,
-        "reward_type": config.reward_type,
-        "reward_value": config.reward_value,
-        "reward_unit": config.reward_unit,
-        "is_active": config.is_active,
-        "created_at": config.created_at.isoformat()
-    }
+    return existing if existing else config
 
-def get_all_reward_configs(db: Session) -> List[Dict[str, Any]]:
-    """Get all reward configurations - OPTIMIZED"""
-    configs = db.query(RewardConfig).filter(RewardConfig.is_active == True).all()  # ← Active only
-    
-    return [  # ← ONE LINER
-        {
-            "id": c.id,
-            "reward_type": c.reward_type,
-            "reward_value": c.reward_value,
-            "reward_unit": c.reward_unit,
-            "is_active": c.is_active,
-            "created_at": c.created_at.isoformat()
-        }
-        for c in configs
-    ]
-
-# BONUS: Leaderboard function (for /admin/top)
-def get_leaderboard(db: Session, limit: int = 10) -> List[Dict[str, Any]]:
-    """Admin leaderboard - TOP referrers"""
-    from sqlalchemy import desc
-    
-    results = db.query(
-        User.username,
-        func.count(Referral.id).label('referral_count'),
-        func.sum(RewardLedger.reward_value).label('total_rewards')
-    ).outerjoin(
-        Referral, User.id == Referral.referred_by
-    ).outerjoin(
-        RewardLedger, Referral.id == RewardLedger.referral_id
-    ).group_by(User.id, User.username).order_by(
-        desc(func.coalesce(func.sum(RewardLedger.reward_value), 0)),
-        desc(func.count(Referral.id))
-    ).limit(limit).all()
-    
-    return [{
-        "username": r.username,
-        "referral_count": r.referral_count,
-        "total_rewards": r.total_rewards or 0
-    } for r in results]
+def get_all_reward_configs(db: Session) -> list:
+    """Get all reward configurations"""
+    return db.query(RewardConfig).order_by(RewardConfig.reward_type).all()
